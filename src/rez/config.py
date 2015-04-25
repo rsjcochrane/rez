@@ -1,17 +1,19 @@
 from rez.util import deep_update
 from rez.utils.data_utils import AttrDictWrapper, RO_AttrDictWrapper, \
-    convert_dicts, cached_property, LazyAttributeMeta
-from rez.utils.formatting import expandvars
+    convert_dicts, cached_property, cached_class_property, LazyAttributeMeta
+from rez.utils.formatting import expandvars, expanduser
 from rez.utils.logging_ import get_debug_printer
 from rez.utils.scope import scoped_format
 from rez.exceptions import ConfigurationError
 from rez import module_root_path
 from rez.system import system
 from rez.vendor.schema.schema import Schema, SchemaError, Optional, And, Or
+from rez.vendor.enum import Enum
 from rez.vendor import yaml
 from rez.vendor.yaml.error import YAMLError
 from rez.backport.lru_cache import lru_cache
 from UserDict import UserDict
+from inspect import ismodule
 import os
 import os.path
 import copy
@@ -151,6 +153,20 @@ class Dict(Setting):
                 % value)
 
 
+class SuiteVisibility_(Str):
+    @cached_class_property
+    def schema(cls):
+        from rez.resolved_context import SuiteVisibility
+        return Or(*(x.name for x in SuiteVisibility))
+
+
+class VariantSelectMode_(Str):
+    @cached_class_property
+    def schema(cls):
+        from rez.solver import VariantSelectMode
+        return Or(*(x.name for x in VariantSelectMode))
+
+
 config_schema = Schema({
     "packages_path":                                PathList,
     "plugin_path":                                  PathList,
@@ -172,9 +188,9 @@ config_schema = Schema({
     "local_packages_path":                          Str,
     "release_packages_path":                        Str,
     "dot_image_format":                             Str,
-    "prompt":                                       Str,
     "build_directory":                              Str,
     "documentation_url":                            Str,
+    "suite_visibility":                             SuiteVisibility_,
     "suite_alias_prefix_char":                      Char,
     "tmpdir":                                       OptionalStr,
     "default_shell":                                OptionalStr,
@@ -201,16 +217,15 @@ config_schema = Schema({
     "alias_fore":                                   OptionalStr,
     "alias_back":                                   OptionalStr,
     "resource_caching_maxsize":                     Int,
-    "resolve_max_depth":                            Int,
-    "resolve_start_depth":                          Int,
     "max_package_changelog_chars":                  Int,
     "memcached_package_file_min_compress_len":      Int,
     "memcached_context_file_min_compress_len":      Int,
     "memcached_listdir_min_compress_len":           Int,
     "memcached_resolve_min_compress_len":           Int,
     "color_enabled":                                Bool,
-    "resource_caching":                             Bool,
     "resolve_caching":                              Bool,
+    "cache_package_files":                          Bool,
+    "cache_listdir":                                Bool,
     "prune_failed_graph":                           Bool,
     "all_parent_variables":                         Bool,
     "all_resetting_variables":                      Bool,
@@ -245,6 +260,7 @@ config_schema = Schema({
     "rez_1_cmake_variables":                        Bool,
     "disable_rez_1_compatibility":                  Bool,
     "env_var_separators":                           Dict,
+    "variant_select_mode":                          VariantSelectMode_,
 
     # GUI settings
     "use_pyside":                                   Bool,
@@ -413,11 +429,7 @@ class Config(object):
 
     @cached_property
     def _data(self):
-        data = {}
-        for filepath in self.filepaths:
-            data_ = _load_config_yaml(filepath)
-            deep_update(data, data_)
-
+        data = _load_config_from_filepaths(self.filepaths)
         deep_update(data, self.overrides)
         return data
 
@@ -426,7 +438,7 @@ class Config(object):
         """See comment block at top of 'rezconfig' describing how the main
         config is assembled."""
         filepaths = []
-        filepaths.append(os.path.join(module_root_path, "rezconfig"))
+        filepaths.append(get_module_root_config())
         filepath = os.getenv("REZ_CONFIG_FILE")
         if filepath and os.path.isfile(filepath):
             filepaths.append(filepath)
@@ -548,7 +560,7 @@ def expand_system_vars(data):
     def _expanded(value):
         if isinstance(value, basestring):
             value = expandvars(value)
-            value = os.path.expanduser(value)
+            value = expanduser(value)
             return scoped_format(value, system=system)
         elif isinstance(value, (list, tuple, set)):
             return [_expanded(x) for x in value]
@@ -579,8 +591,28 @@ def _create_locked_config(overrides=None):
     Returns:
         `Config` object.
     """
-    filepath = os.path.join(module_root_path, "rezconfig")
-    return Config([filepath], overrides=overrides, locked=True)
+    return Config([get_module_root_config()], overrides=overrides, locked=True)
+
+
+@lru_cache()
+def _load_config_py(filepath):
+    from rez.vendor.six.six import exec_
+
+    globs = {}
+    result = {}
+
+    with open(filepath) as f:
+        try:
+            code = compile(f.read(), filepath, 'exec')
+            exec_(code, _globs_=globs)
+        except Exception, e:
+            raise ConfigurationError("Error loading configuration from %s: %s"
+                                     % (filepath, str(e)))
+
+    for k, v in globs.iteritems():
+        if k != '__builtins__' and not ismodule(v):
+            result[k] = v
+    return result
 
 
 @lru_cache()
@@ -592,6 +624,27 @@ def _load_config_yaml(filepath):
     except YAMLError as e:
         raise ConfigurationError("Error loading configuration from %s: %s"
                                  % (filepath, str(e)))
+
+
+def _load_config_from_filepaths(filepaths):
+    data = {}
+    loaders = [(".py", _load_config_py),
+               ("", _load_config_yaml)]
+
+    for filepath in filepaths:
+        for extension, loader in loaders:
+            filepath_with_extension = filepath + extension
+            if not os.path.isfile(filepath_with_extension):
+                continue
+            data_ = loader(filepath_with_extension)
+            deep_update(data, data_)
+            break
+
+    return data
+
+
+def get_module_root_config():
+    return os.path.join(module_root_path, "rezconfig")
 
 
 # singleton

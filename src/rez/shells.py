@@ -5,6 +5,7 @@ from rez.rex import RexExecutor, ActionInterpreter, OutputStyle
 from rez.util import which, shlex_join
 from rez.utils.logging_ import print_warning
 from rez.exceptions import RezSystemError
+from rez.rex import EscapedString
 from rez.config import config
 from rez.system import system
 import subprocess
@@ -34,6 +35,10 @@ def create_shell(shell=None, **kwargs):
 class Shell(ActionInterpreter):
     """Class representing a shell, such as bash or tcsh.
     """
+
+    schema_dict = {
+        "prompt": basestring}
+
     @classmethod
     def name(cls):
         raise NotImplementedError
@@ -58,28 +63,46 @@ class Shell(ActionInterpreter):
 
     def __init__(self):
         self._lines = []
+        self.settings = config.plugins.shell[self.name()]
 
     def _addline(self, line):
         self._lines.append(line)
 
-    def get_output(self, manager):
-        if manager.output_style == OutputStyle.file:
+    def get_output(self, style=OutputStyle.file):
+        if style == OutputStyle.file:
             script = '\n'.join(self._lines) + '\n'
-        elif manager.output_style == OutputStyle.eval:
+        else:  # eval style
             lines = []
             for line in self._lines:
                 if not line.startswith('#'):  # strip comments
                     line = line.rstrip().rstrip(';')
                     lines.append(line)
             script = ';'.join(lines)
-        else:
-            raise ValueError("Unknown output style: %r" % manager.output_style)
 
         return script
 
     def new_shell(self):
         """Returns A new, reset shell of the same type."""
         return type(self)()
+
+    @classmethod
+    def _unsupported_option(cls, option, val):
+        if val and config.warn("shell_startup"):
+            print_warning("%s ignored, not supported by %s shell"
+                          % (option, cls.name()))
+
+    @classmethod
+    def _overruled_option(cls, option, overruling_option, val):
+        if val and config.warn("shell_startup"):
+            print_warning("%s ignored by %s shell - overruled by %s option"
+                          % (option, cls.name(), overruling_option))
+
+    @classmethod
+    def find_executable(cls, name):
+        exe = which(name)
+        if not exe:
+            raise RuntimeError("Couldn't find executable '%s'." % name)
+        return exe
 
     def spawn_shell(self, context_file, tmpdir, rcfile=None, norc=False,
                     stdin=False, command=None, env=None, quiet=False,
@@ -111,6 +134,16 @@ class Shell(ActionInterpreter):
         """
         raise NotImplementedError
 
+    def join(self, command):
+        """
+        Args:
+            command: 
+                A sequence of program arguments to be joined into a single
+                string that can be executed in the current shell.
+        Returns:
+            A string object representing the command.
+        """
+        raise NotImplementedError
 
 class UnixShell(Shell):
     """
@@ -143,14 +176,6 @@ class UnixShell(Shell):
         return True
 
     @classmethod
-    def find_executable(cls, name):
-        exe = which(name)
-        if not exe:
-            raise RuntimeError("Couldn't find executable '%s' for shell type '%s'"
-                               % (name, cls.name()))
-        return exe
-
-    @classmethod
     def get_startup_sequence(cls, rcfile, norc, stdin, command):
         """
         Return a dict containing:
@@ -167,18 +192,6 @@ class UnixShell(Shell):
         """
         raise NotImplementedError
 
-    @classmethod
-    def _unsupported_option(cls, option, val):
-        if val and config.warn("shell_startup"):
-            print_warning("%s ignored, not supported by %s shell"
-                          % (option, cls.name()))
-
-    @classmethod
-    def _overruled_option(cls, option, overruling_option, val):
-        if val and config.warn("shell_startup"):
-            print_warning("%s ignored by %s shell - overruled by %s option"
-                          % (option, cls.name(), overruling_option))
-
     def spawn_shell(self, context_file, tmpdir, rcfile=None, norc=False,
                     stdin=False, command=None, env=None, quiet=False,
                     pre_command=None, **Popen_args):
@@ -191,7 +204,7 @@ class UnixShell(Shell):
         shell_command = None
 
         def _record_shell(ex, files, bind_rez=True, print_msg=False):
-            # TODO make context sourcing position configurable?
+            # TODO: make context sourcing position configurable?
             if bind_rez:
                 ex.source(context_file)
             for file_ in files:
@@ -222,8 +235,8 @@ class UnixShell(Shell):
 
         executor = _create_ex()
 
-        if config.prompt:
-            newprompt = '${REZ_ENV_PROMPT}%s' % config.prompt
+        if self.settings.prompt:
+            newprompt = '${REZ_ENV_PROMPT}%s' % self.settings.prompt
             executor.interpreter._saferefenv('REZ_ENV_PROMPT')
             executor.env.REZ_ENV_PROMPT = newprompt
 
@@ -321,19 +334,35 @@ class UnixShell(Shell):
 
     def info(self, value):
         for line in value.split('\n'):
+            line = self.escape_string(line)
             self._addline('echo %s' % line)
 
     def error(self, value):
         for line in value.split('\n'):
+            line = self.escape_string(line)
             self._addline('echo %s 1>&2' % line)
 
+    # escaping is allowed in args, but not in program string
     def command(self, value):
-        value = shlex_join(value)
+        if hasattr(value, '__iter__'):
+            it = iter(value)
+            cmd = EscapedString.disallow(it.next())
+            args_str = ' '.join(self.escape_string(x) for x in it)
+            value = "%s %s" % (cmd, args_str)
+        else:
+            value = EscapedString.disallow(value)
         self._addline(value)
 
     def comment(self, value):
+        value = EscapedString.demote(value)
         for line in value.split('\n'):
             self._addline('# %s' % line)
 
     def shebang(self):
         self._addline("#!%s" % self.executable)
+
+    def get_key_token(self, key):
+        return "${%s}" % key
+
+    def join(self, command):
+        return shlex_join(command)

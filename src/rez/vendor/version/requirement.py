@@ -188,11 +188,7 @@ class Requirement(_Common):
         """Return a string representation that is safe for the current filesystem,
         and guarantees that no two different Requirement objects will encode to
         the same value."""
-        import platform
-        if platform.system() == "Windows":
-            raise NotImplemented
-        else:
-            return str(self)
+        return str(self)
 
     def conflicts_with(self, other):
         """Returns True if this requirement conflicts with another."""
@@ -361,6 +357,10 @@ class RequirementList(_Common):
     def conflict_names(self):
         """Set of conflict requirement names."""
         return self.conflict_names_
+
+    def __iter__(self):
+        for requirement in self.requirements_:
+            yield requirement
 
     def get(self, name):
         """Returns the Requirement for the given object, or None.

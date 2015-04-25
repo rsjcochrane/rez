@@ -21,6 +21,10 @@
 # expansions are supported:
 # - Any property of the system object: Eg '{system.platform}' (see system.py)
 # - Any environment variable: Eg '${HOME}'
+#
+# Paths should use the path separator appropriate for the operating system
+# (based on Python's os.path.sep).  So for Linux paths, / should be used.  On
+# Windows \ (unescaped) should be used.
 #------------------------------------------------------------------------------
 
 
@@ -62,8 +66,14 @@ bind_module_path: []
 # Caching
 ###############################################################################
 
-# Use available caching mechanisms to speed up resolves when applicable.
+# Cache resolves.
 resolve_caching: true
+
+# Cache package file reads
+cache_package_files: true
+
+# Cache directory traversals
+cache_listdir: true
 
 # The size of the local (in-process) resource cache. Resources include package
 # families, packages and variants. A value of 0 disables caching; -1 sets a cache
@@ -96,12 +106,6 @@ memcached_resolve_min_compress_len: 1
 # Misc
 ###############################################################################
 
-# If True, enable resource caching. This caches things such as disk reads of
-# package.yaml files, and data validation. You would only turn this off for
-# debugging purposes.
-# TODO DEPRECATE
-resource_caching: true
-
 # If not zero, truncates all package changelog entries to this maximum length.
 # You should set this value - changelogs can theoretically be very large, and
 # this adversely impacts package load times.
@@ -119,36 +123,19 @@ implicit_packages:
 - '~arch=={system.arch}'
 - '~os=={system.os}'
 
-# 'start_depth' and 'max_depth' are used to delay loading older packages until
-# necessary. More recent packages are searched first, and then if a solution is
-# not found, older packages may be searched in subsequent solves.
-#
-# This often results in faster solves, because generally speaking, older packages
-# are used less often. If 'start_depth' is specified, multiple solves are performed,
-# with the depth doubling until either all relevant packages are being loaded, or
-# a solution is found. Some examples of possible scenarios are:
-#
-# max_depth  start_depth  effect
-# ---------  -----------  ------
-# 0          0            All packages are loaded; one solve is performed.
-# N          0            Only the latest N packages are loaded; one solve is
-#                         performed.
-# 0          N            Multiple solves are performed, with the search depth N
-#                         doubling with each solve.
-# M          N            Multiple solves are performed, with the search depth N
-#                         doubling with each solve. The depth is truncated at M.
-#
-# Note that depth settings still work when resolving with a timestamp - the
-# latest N packages *at that time* will be used in the search.
-#
-resolve_start_depth: 1
-resolve_max_depth: 0
-
 # If true, then when a resolve graph is generated during a failed solve, packages
 # unrelated to the failure are pruned from the graph. An 'unrelated' package is
 # one that is not a dependency ancestor of any packages directly involved in the
 # failure.
 prune_failed_graph: true
+
+# Variant select mode. This determines which variants in a package are preferred
+# during a solve. Valid options are:
+# - version_priority: Prefer variants that contain higher versions of packages
+#   present in the request;
+# - intersection_priority: Prefer variants that contain the most number of
+#   packages that are present in the request.
+variant_select_mode: version_priority
 
 
 ###############################################################################
@@ -193,6 +180,15 @@ terminal_emulator_command:
 # configured separator will be used.
 env_var_separators:
     CMAKE_MODULE_PATH: ';'
+    DOXYGEN_TAGFILES: ' '
+
+# Defines what suites on $PATH stay visible when a new rez environment is resolved.
+# Possible values are:
+# - 'never':   			Don't attempt to keep any suites visible in a new env
+# - 'always':  			Keep suites visible in any new env
+# - 'parent':  			Keep only the parent suite of a tool visible
+# - 'parent_priority':  Keep all suites visible and the parent takes precedence
+suite_visibility: always
 
 
 ###############################################################################
@@ -308,10 +304,6 @@ browser:
 
 # The default image format that dot-graphs are rendered to.
 dot_image_format: png
-
-# String to add to shell prompt when using rez-env. Set prompt to the empty
-# string if you do not want Rez changing the prompt.
-prompt: '>'
 
 # If true, prefixes the prompt, suffixes if false
 prefix_prompt: true

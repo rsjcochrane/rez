@@ -2,11 +2,15 @@
 Utilities related to managing data types.
 """
 from rez.vendor.schema.schema import Schema, Optional
+from rez.exceptions import RexError
 from collections import MutableMapping
-from inspect import getsourcelines
+from inspect import getsourcelines, getargspec
 from threading import Lock
 from textwrap import dedent
-import re
+
+
+class _Missing: pass
+_missing = _Missing()
 
 
 class SourceCode(object):
@@ -16,15 +20,42 @@ class SourceCode(object):
 
     @classmethod
     def from_function(cls, func):
+        argspec = getargspec(func)
+        if argspec.args or argspec.varargs or argspec.keywords:
+            raise RexError('top level functions in python rez package files '
+                           'cannot take any arguments')
+
+        # now that we've verified that the func takes no args, can strip out
+        # the first line of the sourcecode, with the argspec of the func...
         loc = getsourcelines(func)[0][1:]
         code = dedent(''.join(loc))
-        if code and code[0] in (' ', '\t'):
-            # outer indent(s) follow, perhaps comments
-            code = "if True:\n" + code
+
+        # align lines that start with a comment (#)
+        codelines = code.split('\n')
+        linescount = len(codelines)
+        for i, line in enumerate(codelines):
+            if line.startswith('#'):
+                nextindex = i+1 if i < linescount else i-1
+                nextline = codelines[nextindex]
+                while nextline.startswith('#'):
+                    nextline = codelines[nextindex]
+                    nextindex = nextindex+1 if nextindex < linescount else nextindex-1
+                firstchar = len(nextline)-len(nextline.lstrip())
+                codelines[i] = '%s%s' % (nextline[:firstchar], line)
+
+        code = '\n'.join(codelines).rstrip()
+        code = dedent(code)
 
         value = SourceCode.__new__(SourceCode)
-        value.source = code.rstrip()
+        value.source = code
         return value
+
+    def corrected_for_indent(self):
+        if self.source and self.source[0] in (' ', '\t'):
+            new_source = "if True:\n" + self.source
+            return SourceCode(new_source)
+        else:
+            return self
 
     def __eq__(self, other):
         return (isinstance(other, SourceCode)
@@ -37,12 +68,27 @@ class SourceCode(object):
         return self.source
 
     def __repr__(self):
-        txt = str(self).replace('\n', "\\n")
-        return "%s(%s)" % (self.__class__.__name__, txt)
+        return "%s(%r)" % (self.__class__.__name__, self.source)
 
 
 class cached_property(object):
-    """Simple property caching descriptor."""
+    """Simple property caching descriptor.
+
+    Example:
+
+        >>> class Foo(object):
+        >>>     @cached_property
+        >>>     def bah(self):
+        >>>         print 'bah'
+        >>>         return 1
+        >>>
+        >>> f = Foo()
+        >>> f.bah
+        bah
+        1
+        >>> f.bah
+        1
+    """
     def __init__(self, func, name=None):
         self.func = func
         self.name = name or func.__name__
@@ -57,6 +103,36 @@ class cached_property(object):
         except AttributeError:
             raise AttributeError("can't set attribute %r on %r"
                                  % (self.name, instance))
+        return result
+
+
+class cached_class_property(object):
+    """Simple class property caching descriptor.
+
+    Example:
+
+        >>> class Foo(object):
+        >>>     @cached_class_property
+        >>>     def bah(cls):
+        >>>         print 'bah'
+        >>>         return 1
+        >>>
+        >>> Foo.bah
+        bah
+        1
+        >>> Foo.bah
+        1
+    """
+    def __init__(self, func, name=None):
+        self.func = func
+
+    def __get__(self, instance, owner=None):
+        assert owner
+        name = "_class_property_" + self.func.__name__
+        result = getattr(owner, name, _missing)
+        if result is _missing:
+            result = self.func(owner)
+            setattr(owner, name, result)
         return result
 
 

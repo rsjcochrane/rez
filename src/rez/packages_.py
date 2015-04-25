@@ -1,13 +1,14 @@
 from rez.package_repository import package_repository_manager
 from rez.package_resources_ import PackageFamilyResource, PackageResource, \
-    VariantResource, package_family_schema, package_schema, variant_schema
+    VariantResource, package_family_schema, package_schema, variant_schema, \
+    package_release_keys
 from rez.package_serialise import dump_package_data
 from rez.utils.data_utils import cached_property
 from rez.utils.formatting import StringFormatMixin, StringFormatType
 from rez.utils.filesystem import is_subdirectory
 from rez.utils.schema import schema_keys
 from rez.utils.resources import ResourceHandle, ResourceWrapper
-from rez.exceptions import PackageMetadataError
+from rez.exceptions import PackageMetadataError, PackageFamilyNotFoundError
 from rez.vendor.version.version import VersionRange
 from rez.vendor.version.requirement import VersionedObject
 from rez.serialise import load_from_file, FileFormat
@@ -72,8 +73,10 @@ class PackageBaseResourceWrapper(PackageRepositoryResourceWrapper):
 
     @cached_property
     def is_local(self):
-        """Returns True if the variant is from a local package"""
-        return is_subdirectory(self.base, config.local_packages_path)
+        """Returns True if the package is in the local package repository"""
+        local_repo = package_repository_manager.get_repository(
+            self.config.local_packages_path)
+        return (self.resource._repository.uid == local_repo.uid)
 
     def print_info(self, buf=None, format_=FileFormat.yaml,
                    skip_attributes=None, include_release=False):
@@ -87,18 +90,28 @@ class PackageBaseResourceWrapper(PackageRepositoryResourceWrapper):
                 such as 'timestamp' and 'changelog'
         """
         data = self.validated_data().copy()
-        data["config"] = self.data.get("config")
+
+        # config is a special case. We only really want to show any config settings
+        # that were in the package.py, not the entire Config contents that get
+        # grafted onto the Package/Variant instance. However Variant has an empy
+        # 'data' dict property, since it forwards data from its parent package.
+        data.pop("config", None)
+        if self.config:
+            if isinstance(self, Package):
+                config_dict = self.data.get("config")
+            else:
+                config_dict = self.parent.data.get("config")
+            data["config"] = config_dict
+
+        """
+        if self.data:
+            data["config"] = self.data.get("config")
         if "base" in data:
             del data["base"]
+        """
 
         if not include_release:
-            release_attributes = ["timestamp",
-                                  "revision",
-                                  "changelog",
-                                  "release_message",
-                                  "previous_version",
-                                  "previous_revision"]
-            skip_attributes = (skip_attributes or []) + release_attributes
+            skip_attributes = list(skip_attributes or []) + list(package_release_keys)
 
         buf = buf or sys.stdout
         dump_package_data(data, buf=buf, format_=format_,
@@ -152,6 +165,16 @@ class Package(PackageBaseResourceWrapper):
         repo = self.resource._repository
         for variant in repo.iter_variants(self.resource):
             yield Variant(variant)
+
+    def get_variant(self, index=None):
+        """Get the variant with the associated index.
+
+        Returns:
+            `Variant` object, or None if no variant with the given index exists.
+        """
+        for variant in self.iter_variants():
+            if variant.index == index:
+                return variant
 
 
 class Variant(PackageBaseResourceWrapper):
@@ -339,7 +362,8 @@ def get_developer_package(path):
         not normally appear on a `Package` object. A developer package is the
         only case where we know we can directly associate a 'package.*' file
         with a package - other packages can come from any kind of package repo,
-        which may or may not associate a single file with a single package.
+        which may or may not associate a single file with a single package (or
+        any file for that matter - it may come from a database).
 
     Args:
         path: Directory containing the package definition file.
@@ -475,6 +499,28 @@ def get_completions(prefix, paths=None, family_only=False):
     if op:
         words = set(op + x for x in words)
     return words
+
+
+def get_latest_package(name, range_=None, paths=None, error=False):
+    """Get the latest package for a given package name.
+
+    Args:
+        name (str): Package name.
+        range_ (`VersionRange`): Version range to search within.
+        paths (list of str, optional): paths to search for package families,
+            defaults to `config.packages_path`.
+        error (bool): If True, raise an error if no package is found.
+
+    Returns:
+        `Package` object, or None if no package is found.
+    """
+    it = iter_packages(name, range_=range_, paths=paths)
+    try:
+        return max(it, key=lambda x: x.version)
+    except ValueError:  # empty sequence
+        if error:
+            raise PackageFamilyNotFoundError("No such package family %r" % name)
+        return None
 
 
 def _get_families(name, paths=None):

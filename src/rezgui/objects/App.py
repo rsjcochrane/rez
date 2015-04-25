@@ -4,7 +4,7 @@ from rezgui.objects.ProcessTrackerThread import ProcessTrackerThread
 from rezgui import organisation_name, application_name
 from rez.resolved_context import ResolvedContext
 from rez.exceptions import ResolvedContextError
-from rez.util import propertycache
+from rez.utils.data_utils import cached_property
 from rez.vendor import yaml
 from contextlib import contextmanager
 import sys
@@ -21,7 +21,7 @@ class App(QtGui.QApplication):
         self.setApplicationName(application_name)
         self.main_window = None
 
-    @propertycache
+    @cached_property
     def config(self):
         filepath = os.path.dirname(__file__)
         filepath = os.path.dirname(filepath)
@@ -33,7 +33,7 @@ class App(QtGui.QApplication):
                       organization=organisation_name,
                       application=application_name)
 
-    @propertycache
+    @cached_property
     def process_tracker(self):
         th = ProcessTrackerThread()
         th.start()
@@ -56,20 +56,27 @@ class App(QtGui.QApplication):
             try:
                 context = ResolvedContext.load(filepath)
             except ResolvedContextError as e:
-                QtGui.QMessageBox.critical(self, "Failed to load context", str(e))
+                QtGui.QMessageBox.critical(self.main_window,
+                                           "Failed to load context", str(e))
             finally:
                 QtGui.QApplication.restoreOverrideCursor()
 
         if context:
             with self.status("Validating %s..." % filepath):
                 QtGui.QApplication.setOverrideCursor(busy_cursor)
+                error = None
+
                 try:
                     context.validate()
                 except ResolvedContextError as e:
-                    QtGui.QMessageBox.critical(self, "Context validation failure", str(e))
-                    context = None
+                    error = str(e)
                 finally:
                     QtGui.QApplication.restoreOverrideCursor()
+
+                if error:
+                    QtGui.QMessageBox.critical(
+                        self.main_window, "Context validation failure", error)
+                    context = None
 
         if context:
             path = os.path.realpath(filepath)

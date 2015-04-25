@@ -3,9 +3,12 @@ SH shell
 """
 import os
 import os.path
+import pipes
 import subprocess
 from rez.config import config
+from rez.utils.platform_ import platform_
 from rez.shells import UnixShell
+from rez.rex import EscapedString
 
 
 class SH(UnixShell):
@@ -81,35 +84,57 @@ class SH(UnixShell):
             source_bind_files=False)
 
     def _bind_interactive_rez(self):
-        if config.prompt:
-            stored_prompt = os.getenv("$REZ_STORED_PROMPT")
-            curr_prompt = stored_prompt or os.getenv("$PS1", "\\h:\\w]$ ")
+        if self.settings.prompt:
+            stored_prompt = os.getenv("REZ_STORED_PROMPT")
+            curr_prompt = stored_prompt or os.getenv("PS1", "\\h:\\w]$ ")
             if not stored_prompt:
                 self.setenv("REZ_STORED_PROMPT", '"%s"' % curr_prompt)
 
             new_prompt = "\[\e[1m\]$REZ_ENV_PROMPT\[\e[0m\]"
             new_prompt = (new_prompt + " %s") if config.prefix_prompt \
                 else ("%s " + new_prompt)
+
             new_prompt = new_prompt % curr_prompt
-            self._addline('export PS1="%s"' % new_prompt)
+            new_prompt = self.escape_string(new_prompt)
+            self._addline('export PS1=%s' % new_prompt)
 
     def setenv(self, key, value):
+        value = self.escape_string(value)
         self._addline('export %s=%s' % (key, value))
 
     def unsetenv(self, key):
         self._addline("unset %s" % key)
 
     def alias(self, key, value):
+        value = EscapedString.disallow(value)
         cmd = "function {key}() {{ {value}; }};export -f {key};"
         self._addline(cmd.format(key=key, value=value))
 
     def source(self, value):
-        value = os.path.expanduser(value)
+        value = self.escape_string(value)
         self._addline('. %s' % value)
+
+    def escape_string(self, value):
+        value = EscapedString.promote(value)
+        value = value.expanduser()
+        result = ''
+
+        for is_literal, txt in value.strings:
+            if is_literal:
+                txt = pipes.quote(txt)
+                if not txt.startswith("'"):
+                    txt = "'%s'" % txt
+            else:
+                txt = txt.replace('\\', '\\\\')
+                txt = txt.replace('"', '\\"')
+                txt = '"%s"' % txt
+            result += txt
+        return result
 
     def _saferefenv(self, key):
         pass
 
 
 def register_plugin():
-    return SH
+    if platform_.name != "windows":
+        return SH

@@ -6,13 +6,13 @@ from rez.utils.logging_ import print_debug
 import re
 import os
 import os.path
+import textwrap
 
 
 variant_key_conversions = {
     "name":         "name",
     "version":      "version",
     "index":        "index",
-    "ext":          "ext",
     "search_path":  "location"
 }
 
@@ -24,8 +24,8 @@ def convert_old_variant_handle(handle_dict):
 
     for old_key, key in variant_key_conversions.iteritems():
         value = old_variables.get(old_key)
-        if value is not None:
-            variables[key] = value
+        #if value is not None:
+        variables[key] = value
 
     path = handle_dict["path"]
     filename = os.path.basename(path)
@@ -74,7 +74,11 @@ def convert_old_commands(commands, annotate=True):
                     value = value[1:-1]
                     break
 
-            separator = config.env_var_separators.get(var, os.pathsep)
+            # As the only old-style commands were Linux/Bash based,
+            # we assume using the default separator ":" is ok - we don't
+            # need to use os.pathsep as we don't expected to see a
+            # Windows path here.
+            separator = config.env_var_separators.get(var, ":")
 
             # This is a special case.  We don't want to include "';'" in
             # our env var separators map as it's not really the correct

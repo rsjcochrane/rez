@@ -7,9 +7,20 @@ from rez.utils.formatting import PackageRequest
 from rez.exceptions import PackageMetadataError
 from rez.config import config, Config, create_config
 from rez.vendor.version.version import Version
-from rez.vendor.schema.schema import Schema, Optional, Or, And, Use
+from rez.vendor.schema.schema import Schema, SchemaError, Optional, Or, And, Use
 from textwrap import dedent
 import os.path
+
+
+
+# package attributes created at release time
+package_release_keys = (
+    "timestamp",
+    'revision',
+    'changelog',
+    'release_message',
+    'previous_version',
+    'previous_revision')
 
 
 #------------------------------------------------------------------------------
@@ -47,6 +58,10 @@ package_base_schema_dict.update({
     Optional('requires'):               [PackageRequest],
     Optional('build_requires'):         [PackageRequest],
     Optional('private_build_requires'): [PackageRequest],
+
+    # plugins
+    Optional('has_plugins'):            bool,
+    Optional('plugin_for'):             [basestring],
 
     # general
     Optional('uuid'):                   basestring,
@@ -125,6 +140,9 @@ package_pod_schema_dict.update({
     Optional('build_requires'):         [_package_request_schema],
     Optional('private_build_requires'): [_package_request_schema],
     Optional('variants'):               [[_package_request_schema]],
+
+    Optional('has_plugins'):            bool,
+    Optional('plugin_for'):             [basestring],
 
     Optional('uuid'):                   basestring,
     Optional('config'):                 And(dict,
